@@ -1,0 +1,18 @@
+FROM node:24-alpine3.22 AS deps
+
+RUN apk add --no-cache curl
+
+WORKDIR /usr/src/app
+
+COPY package*.json ./
+COPY package-lock.json ./
+
+RUN npm install
+
+COPY . .
+
+ENV NODE_ENV=development
+
+EXPOSE 4012
+
+CMD ["npm", "run", "start:dev"]
