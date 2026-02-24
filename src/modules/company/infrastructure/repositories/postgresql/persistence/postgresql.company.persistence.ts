@@ -11,33 +11,33 @@ import { CompanyAdapter } from '../adapters/company.adapter';
 
 @Injectable()
 export class PostgreSQLCompanyPersistence
-  implements InterfaceCompanyRepository {
-  constructor(private readonly postgreSqlService: DatabaseServicePostgreSQL) { }
+  implements InterfaceCompanyRepository
+{
+  constructor(private readonly postgreSqlService: DatabaseServicePostgreSQL) {}
 
   async createCompany(company: CompanyModel): Promise<CompanyResponse | null> {
     try {
-
       return this.postgreSqlService.transaction(async (client) => {
         // 1. Insertar en Cliente
         const insertClientQuery = `
-      INSERT INTO Cliente (clienteId, tipoIdentificacionId, clienteIdValido)
+      INSERT INTO cliente (cliente_id, tipo_identificacion_id, cliente_id_valido)
       VALUES ($1, $2, $3)
-      RETURNING clienteId;
+      RETURNING cliente_id;
     `;
         const clienteResult = await client.query(insertClientQuery, [
           company['companyRuc'],
           company['identificationType'],
           'CED_VALID',
         ]);
-        const clienteId = clienteResult.rows[0].clienteid;
+        const clienteId = clienteResult.rows[0].cliente_id;
 
         // 2. Insertar en Empresa
         const insertCompanyQuery = `
-      INSERT INTO Empresa (
-        nombreComercial, razonSocial, ruc, direccion, parroquiaId,
-        clienteId, pais
+      INSERT INTO empresa (
+        nombre_comercial, razon_social, ruc, direccion, parroquia_id,
+        cliente_id, pais
       ) VALUES ($1,$2,$3,$4,$5,$6,$7)
-      RETURNING empresaId;
+      RETURNING empresa_id;
     `;
         const companyResult = await client.query(insertCompanyQuery, [
           company['companyName'],
@@ -49,10 +49,10 @@ export class PostgreSQLCompanyPersistence
           company['companyCountry'],
         ]);
 
-        const companyId = companyResult.rows[0].empresaId; // Asumimos que companyId es igual a clienteId
+        const companyId = companyResult.rows[0].empresa_id; // Asumimos que companyId es igual a clienteId
         // 4️⃣ Insertar Correos
         const insertCorreoQuery = `
-      INSERT INTO Correo (email, clienteId)
+      INSERT INTO correo_electronico (email, cliente_id)
       VALUES ($1, $2);
     `;
         for (const email of company['companyEmails']) {
@@ -61,7 +61,7 @@ export class PostgreSQLCompanyPersistence
 
         // 5️⃣ Insertar Teléfonos
         const insertTelefonoQuery = `
-      INSERT INTO Telefono (clienteId, numero, tipoTelefonoId, esValido)
+      INSERT INTO telefono (cliente_id, numero, tipo_telefono_id, es_valido)
       VALUES ($1, $2, $3, $4);
     `;
         for (const numero of company['companyPhones']) {
@@ -70,20 +70,20 @@ export class PostgreSQLCompanyPersistence
 
         const selectQuery = `
       SELECT
-          e.empresaid AS "companyId",
-          e.nombrecomercial AS "companyName",
-          e.razonsocial AS "socialReason",
+          e.empresa_id AS "companyId",
+          e.nombre_comercial AS "companyName",
+          e.razon_social AS "socialReason",
           e.ruc AS "companyRuc",
           e.direccion AS "companyAddress",
-          e.parroquiaid AS "companyParishId",
+          e.parroquia_id AS "companyParishId",
           e.pais AS "companyCountry",
-          COALESCE(cc.emails, '{}') AS "companyEmails",
+          COALESCE(cc.correos, '{}') AS "companyEmails",
           COALESCE(cc.phones, '{}') AS "companyPhones",
-          cl.tipoidentificacionid AS "identificationType"
+          cl.tipo_identificacion_id AS "identificationType"
       FROM cliente cl
-      INNER JOIN empresa e ON e.clienteid = cl.clienteid
-      LEFT JOIN cliente_contacto cc ON cc.clienteid = cl.clienteid
-      WHERE cl.clienteid = $1;
+      INNER JOIN empresa e ON e.cliente_id = cl.cliente_id
+      LEFT JOIN cliente_contacto cc ON cc.cliente_id = cl.cliente_id
+      WHERE cl.cliente_id = $1;
     `;
 
         const selectResult = await client.query<CompanySQLResponse>(
@@ -91,10 +91,9 @@ export class PostgreSQLCompanyPersistence
           [company['companyRuc']],
         );
 
-        const response =
-          CompanyAdapter.fromCompanySqlResponseToCompanyResponse(
-            selectResult.rows[0],
-          );
+        const response = CompanyAdapter.fromCompanySqlResponseToCompanyResponse(
+          selectResult.rows[0],
+        );
         return response;
       });
     } catch (error) {
@@ -105,7 +104,7 @@ export class PostgreSQLCompanyPersistence
   async verifyCompanyExists(companyRuc: string): Promise<boolean> {
     try {
       const query = `
-      SELECT 1 FROM Empresa WHERE ruc = $1 LIMIT 1;
+      SELECT 1 FROM empresa WHERE ruc = $1 LIMIT 1;
     `;
       const result = await this.postgreSqlService.query(query, [companyRuc]);
       return result.length > 0;
@@ -122,14 +121,14 @@ export class PostgreSQLCompanyPersistence
       return this.postgreSqlService.transaction(async (client) => {
         // Actualizar Empresa
         const updateCompanyQuery = `
-      UPDATE Empresa
-      SET nombreComercial = $1,
-          razonSocial = $2,
+      UPDATE empresa
+      SET nombre_comercial = $1,
+          razon_social = $2,
           direccion = $3,
-          parroquiaId = $4,
+          parroquia_id = $4,
           pais = $5
       WHERE ruc = $6
-      RETURNING empresaId;
+      RETURNING empresa_id;
     `;
         const companyResult = await client.query(updateCompanyQuery, [
           company['companyName'],
@@ -142,12 +141,12 @@ export class PostgreSQLCompanyPersistence
 
         // Actualizar Correos
         const deleteEmailsQuery = `
-      DELETE FROM Correo WHERE clienteId = $1;
+      DELETE FROM correo_electronico WHERE cliente_id = $1;
     `;
         await client.query(deleteEmailsQuery, [companyRuc]);
 
         const insertEmailQuery = `
-      INSERT INTO Correo (email, clienteId)
+      INSERT INTO correo_electronico (email, cliente_id)
       VALUES ($1, $2);
     `;
         for (const email of company['companyEmails']) {
@@ -156,12 +155,12 @@ export class PostgreSQLCompanyPersistence
 
         // Actualizar Teléfonos
         const deletePhonesQuery = `
-      DELETE FROM Telefono WHERE clienteId = $1;
+      DELETE FROM telefono WHERE cliente_id = $1;
     `;
         await client.query(deletePhonesQuery, [companyRuc]);
 
         const insertPhoneQuery = `
-      INSERT INTO Telefono (clienteId, numero, tipoTelefonoId, esValido)
+      INSERT INTO telefono (cliente_id, numero, tipo_telefono_id, es_valido)
       VALUES ($1, $2, $3, $4);
     `;
         for (const numero of company['companyPhones']) {
@@ -179,20 +178,20 @@ export class PostgreSQLCompanyPersistence
 
         const selectQuery = `
       SELECT
-          e.empresaid AS "companyId",
-          e.nombrecomercial AS "companyName",
-          e.razonsocial AS "socialReason",
+          e.empresa_id AS "companyId",
+          e.nombre_comercial AS "companyName",
+          e.razon_social AS "socialReason",
           e.ruc AS "companyRuc",
           e.direccion AS "companyAddress",
-          e.parroquiaid AS "companyParishId",
+          e.parroquia_id AS "companyParishId",
           e.pais AS "companyCountry",
-          COALESCE(cc.emails, '{}') AS "companyEmails",
+          COALESCE(cc.correos, '{}') AS "companyEmails",
           COALESCE(cc.phones, '{}') AS "companyPhones",
-          cl.tipoidentificacionid AS "identificationType"
+          cl.tipo_identificacion_id AS "identificationType"
       FROM cliente cl
-      INNER JOIN empresa e ON e.clienteid = cl.clienteid
-      LEFT JOIN cliente_contacto cc ON cc.clienteid = cl.clienteid
-      WHERE cl.clienteid = $1;
+      INNER JOIN empresa e ON e.cliente_id = cl.cliente_id
+      LEFT JOIN cliente_contacto cc ON cc.cliente_id = cl.cliente_id
+      WHERE cl.cliente_id = $1;
     `;
 
         const selectResult = await client.query<CompanySQLResponse>(
@@ -200,10 +199,9 @@ export class PostgreSQLCompanyPersistence
           [company['companyRuc']],
         );
 
-        const response =
-          CompanyAdapter.fromCompanySqlResponseToCompanyResponse(
-            selectResult.rows[0],
-          );
+        const response = CompanyAdapter.fromCompanySqlResponseToCompanyResponse(
+          selectResult.rows[0],
+        );
         return response;
       });
     } catch (error) {
@@ -215,20 +213,20 @@ export class PostgreSQLCompanyPersistence
     try {
       const query = `
       SELECT
-          e.empresaid AS "companyId",
-          e.nombrecomercial AS "companyName",
-          e.razonsocial AS "socialReason",
+          e.empresa_id AS "companyId",
+          e.nombre_comercial AS "companyName",
+          e.razon_social AS "socialReason",
           e.ruc AS "companyRuc",
           e.direccion AS "companyAddress",
-          e.parroquiaid AS "companyParishId",
+          e.parroquia_id AS "companyParishId",
           e.pais AS "companyCountry",
-          COALESCE(cc.emails, '{}') AS "companyEmails",
+          COALESCE(cc.correos, '{}') AS "companyEmails",
           COALESCE(cc.phones, '{}') AS "companyPhones",
-          cl.tipoidentificacionid AS "identificationType"
+          cl.tipo_identificacion_id AS "identificationType"
       FROM cliente cl
-      INNER JOIN empresa e ON e.clienteid = cl.clienteid
-      LEFT JOIN cliente_contacto cc ON cc.clienteid = cl.clienteid
-      WHERE cl.clienteid = $1;
+      INNER JOIN empresa e ON e.cliente_id = cl.cliente_id
+      LEFT JOIN cliente_contacto cc ON cc.cliente_id = cl.cliente_id
+      WHERE cl.cliente_id = $1;
     `;
       const result = await this.postgreSqlService.query<CompanySQLResponse>(
         query,
@@ -256,19 +254,19 @@ export class PostgreSQLCompanyPersistence
     try {
       const query = `
       SELECT
-          e.empresaid AS "companyId",
-          e.nombrecomercial AS "companyName",
-          e.razonsocial AS "socialReason",
+          e.empresa_id AS "companyId",
+          e.nombre_comercial AS "companyName",
+          e.razon_social AS "socialReason",
           e.ruc AS "companyRuc",
           e.direccion AS "companyAddress",
-          e.parroquiaid AS "companyParishId",
+          e.parroquia_id AS "companyParishId",
           e.pais AS "companyCountry",
-          COALESCE(cc.emails, '{}') AS "companyEmails",
+          COALESCE(cc.correos, '{}') AS "companyEmails",
           COALESCE(cc.phones, '{}') AS "companyPhones",
-          cl.tipoidentificacionid AS "identificationType"
+          cl.tipo_identificacion_id AS "identificationType"
       FROM cliente cl
-      INNER JOIN empresa e ON e.clienteid = cl.clienteid
-      LEFT JOIN cliente_contacto cc ON cc.clienteid = cl.clienteid
+      INNER JOIN empresa e ON e.cliente_id = cl.cliente_id
+      LEFT JOIN cliente_contacto cc ON cc.cliente_id = cl.cliente_id
       LIMIT $1 OFFSET $2;
     `;
       const result = await this.postgreSqlService.query<CompanySQLResponse>(
