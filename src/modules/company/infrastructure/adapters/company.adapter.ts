@@ -1,8 +1,10 @@
-import { CompanyResponse } from "../../../../domain/schemas/dto/response/company.response";
-import { CompanySQLResponse } from "../../../interfaces/sql/company.sql.response";
+import { CompanyResponse } from '../../domain/schemas/dto/response/company.response';
+import { CompanySQLResponse } from '../interfaces/sql/company.sql.response';
 
 export class CompanyAdapter {
-  static fromCompanySqlResponseToCompanyResponse(companySqlResponse: CompanySQLResponse): CompanyResponse {
+  static fromCompanySqlResponseToCompanyResponse(
+    companySqlResponse: CompanySQLResponse,
+  ): CompanyResponse {
     return {
       companyId: companySqlResponse.companyId,
       companyName: companySqlResponse.companyName,

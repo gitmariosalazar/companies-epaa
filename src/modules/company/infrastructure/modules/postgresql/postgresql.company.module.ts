@@ -2,12 +2,13 @@ import { Module } from "@nestjs/common";
 import { ClientsModule, Transport } from "@nestjs/microservices";
 import { environments } from "../../../../../settings/environments/environments";
 import { CompanyController } from "../../controllers/company.controller";
-import { DatabaseServicePostgreSQL } from "../../../../../shared/connections/database/postgresql/postgresql.service";
 import { CompanyService } from "../../../application/services/company.service";
 import { PostgreSQLCompanyPersistence } from "../../repositories/postgresql/persistence/postgresql.company.persistence";
+import { DatabasePersistenceModule } from "../../../../../shared/connections/database/database-persistence.module";
 
 @Module({
   imports: [
+    DatabasePersistenceModule,
     ClientsModule.register([
       {
         name: environments.COMPANIES_KAFKA_CLIENT,
@@ -27,7 +28,7 @@ import { PostgreSQLCompanyPersistence } from "../../repositories/postgresql/pers
   ],
   controllers: [CompanyController],
   providers: [
-    DatabaseServicePostgreSQL, CompanyService,
+    CompanyService,
     {
       provide: 'CompanyRepository',
       useClass: PostgreSQLCompanyPersistence

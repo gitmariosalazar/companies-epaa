@@ -1,187 +1,146 @@
-import { Pool, PoolConfig, QueryResult } from 'pg';
-import { DatabaseAbstract } from '../abstract/abstract.database';
+import { Pool, PoolConfig, QueryResult, PoolClient } from 'pg';
+import { DatabaseAbstract, IDatabaseClient, MutationResponse } from '../abstract/abstract.database';
 import { RpcException } from '@nestjs/microservices';
 import { environments } from '../../../../settings/environments/environments';
 import { statusCode } from '../../../../settings/environments/status-code';
 
-class DatabaseError extends Error {
-  constructor(message: string, public readonly code?: string) {
-    super(message);
-    this.name = 'DatabaseError';
+export class PostgreSQLClientWrapper implements IDatabaseClient {
+  constructor(private readonly client: PoolClient) {}
+
+  async query<T>(
+    sql: string,
+    params?: any[],
+  ): Promise<T[]> {
+    let pIndex = 0;
+    const translatedSql = sql.replace(/\?/g, () => '$' + (++pIndex));
+    const result: QueryResult<T> = await this.client.query<T>(translatedSql, params);
+    return result.rows;
+  }
+
+  async execute(sql: string, params?: any[]): Promise<MutationResponse> {
+    let pIndex = 0;
+    const translatedSql = sql.replace(/\?/g, () => '$' + (++pIndex));
+    const result = await this.client.query(translatedSql, params);
+    return {
+      affectedRows: result.rowCount || 0,
+    };
+  }
+
+  async release(): Promise<void> {
+    this.client.release();
   }
 }
 
 export class DatabaseServicePostgreSQL extends DatabaseAbstract {
-  private static instance: DatabaseServicePostgreSQL;
-  private pool: Pool;
+  private pool: Pool | null = null;
   private isConnected: boolean = false;
-  private readonly maxRetries: number = 3;
-  private readonly retryDelayMs: number = 1000;
-  private readonly queryTimeoutMs: number = 10000;
 
   public constructor() {
     super();
-    this.validateConfig();
-    console.log(environments.DATABASE_HOST, environments.DATABASE_NAME, environments.DATABASE_PASSWORD, environments.DATABASE_PORT, environments.DATABASE_USER)
-    const poolConfig: PoolConfig = {
-      user: environments.DATABASE_USER,
-      host: environments.DATABASE_HOST,
-      password: environments.DATABASE_PASSWORD,
-      database: environments.DATABASE_NAME,
-      port: environments.DATABASE_PORT,
-      max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-    };
-
-    this.pool = new Pool(poolConfig);
-    this.pool.on('error', (err) => {
-      console.error('Unexpected error on idle client', err);
-      this.isConnected = false;
-    });
-  }
-
-  public static getInstance(): DatabaseServicePostgreSQL {
-    if (!DatabaseServicePostgreSQL.instance) {
-      DatabaseServicePostgreSQL.instance = new DatabaseServicePostgreSQL();
-    }
-    return DatabaseServicePostgreSQL.instance;
-  }
-
-  private validateConfig(): void {
-    const requiredConfigs = {
-      databaseUsername: environments.DATABASE_USER,
-      databaseHostname: environments.DATABASE_HOST,
-      databasePassword: environments.DATABASE_PASSWORD,
-      databaseName: environments.DATABASE_NAME,
-      databasePort: environments.DATABASE_PORT
-    };
-
-    for (const [key, value] of Object.entries(requiredConfigs)) {
-      if (!value) {
-        throw new RpcException({
-          statusCode: statusCode.INTERNAL_SERVER_ERROR,
-          message: `Database configuration error: Missing ${key}`,
-        });
-      }
-    }
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.connect();
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    await this.close();
   }
 
   public async connect(): Promise<void> {
-    if (this.isConnected) {
-      console.log('Already connected to PostgreSQL');
-      return;
-    }
-
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-      try {
-        await this.pool.query('SELECT NOW()');
-        this.isConnected = true;
-        console.log('🛢️ Connected to PostgreSQL successfully 🎉!');
-        return;
-      } catch (error) {
-        const errorMessage = `Attempt ${attempt}/${this.maxRetries} - Failed to connect to PostgreSQL: ${error.message}`;
-        console.error(errorMessage);
-
-        if (attempt === this.maxRetries) {
-          throw new RpcException({
-            statusCode: statusCode.INTERNAL_SERVER_ERROR,
-            message: 'Could not connect to PostgreSQL after multiple attempts',
-          });
-        }
-
-        await new Promise(resolve => setTimeout(resolve, this.retryDelayMs * Math.pow(2, attempt)));
-      }
-    }
-  }
-
-  public async transaction<T>(operations: (client: Pool) => Promise<T>): Promise<T> {
-    if (!this.isConnected) {
-      throw new RpcException({
-        statusCode: statusCode.INTERNAL_SERVER_ERROR,
-        message: 'Database is not connected',
-      });
-    }
-    const client = await this.pool.connect();
+    if (this.isConnected && this.pool) return;
     try {
-      await client.query('BEGIN');
-      const result = await operations(client);
-      await client.query('COMMIT');
-      return result;
-    }
-    catch (error) {
-      await client.query('ROLLBACK');
-      const errorMessage = `Transaction failed: ${error.message}`;
-      console.error(errorMessage);
-      throw new RpcException({
-        statusCode: statusCode.INTERNAL_SERVER_ERROR,
-        message: errorMessage,
-      });
-    }
-    finally {
-      client.release();
+      const poolConfig: PoolConfig = {
+        user: environments.DATABASE_USER,
+        host: environments.DATABASE_HOST,
+        password: environments.DATABASE_PASSWORD,
+        database: environments.DATABASE_NAME,
+        port: Number(environments.DATABASE_PORT),
+        max: 20,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 2000,
+      };
+      this.pool = new Pool(poolConfig);
+      // We check connection but we don't throw to avoid crashing the container at startup
+      await this.pool.query('SELECT NOW()');
+      this.isConnected = true;
+      console.log('✅ PostgreSQL Connected Successfully');
+    } catch (error) {
+      console.error('❌ PostgreSQL Connection Failed (Non-fatal at startup):', error.message);
+      this.isConnected = false;
+      // We don't throw here so the NestJS bootstrap can finish
     }
   }
 
   public async query<T>(sql: string, params: any[] = []): Promise<T[]> {
     if (!this.isConnected) {
-      throw new RpcException({
-        statusCode: statusCode.INTERNAL_SERVER_ERROR,
-        message: 'Database is not connected',
-      });
+        // Here we DO throw because it's an actual request failing
+        await this.connect();
+        if (!this.isConnected) {
+            throw new RpcException({ statusCode: statusCode.INTERNAL_SERVER_ERROR, message: 'Database connection is down' });
+        }
     }
-
     try {
-      const result: QueryResult<T> = await Promise.race([
-        this.pool.query<T>(sql, params),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new RpcException({
-            statusCode: statusCode.INTERNAL_SERVER_ERROR,
-            message: 'Query timeout',
-          })), this.queryTimeoutMs)
-        )
-      ]) as QueryResult<T>;
-
-      console.log(`Query executed successfully: ${sql.slice(0, 50)}...`);
+      let pIndex = 0;
+      const translatedSql = sql.replace(/\?/g, () => '$' + (++pIndex));
+      const result = await this.pool!.query<T>(translatedSql, params);
       return result.rows;
     } catch (error) {
-      const errorMessage = `Database query failed: ${error.message}, code: ${error.code}`;
-      console.error(errorMessage, { sql, params });
-      throw new RpcException({
-        statusCode: statusCode.INTERNAL_SERVER_ERROR,
-        message: error.message,
-      });
+      console.error('PostgreSQL query failed:', error);
+      throw new RpcException({ statusCode: statusCode.INTERNAL_SERVER_ERROR, message: error.message });
     }
+  }
+
+  public async execute(sql: string, params: any[] = []): Promise<MutationResponse> {
+    if (!this.isConnected) {
+        await this.connect();
+        if (!this.isConnected) {
+            throw new RpcException({ statusCode: statusCode.INTERNAL_SERVER_ERROR, message: 'Database connection is down' });
+        }
+    }
+    try {
+      let pIndex = 0;
+      const translatedSql = sql.replace(/\?/g, () => '$' + (++pIndex));
+      const result = await this.pool!.query(translatedSql, params);
+      return {
+        affectedRows: result.rowCount || 0,
+      };
+    } catch (error) {
+      console.error('PostgreSQL execution failed:', error);
+      throw new RpcException({ statusCode: statusCode.INTERNAL_SERVER_ERROR, message: error.message });
+    }
+  }
+
+  public async transaction<T>(operations: (client: IDatabaseClient) => Promise<T>): Promise<T> {
+    if (!this.isConnected) {
+        await this.connect();
+        if (!this.isConnected) {
+             throw new RpcException({ statusCode: statusCode.INTERNAL_SERVER_ERROR, message: 'Database connection is down' });
+        }
+    }
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN');
+      const wrapper = new PostgreSQLClientWrapper(client);
+      const result = await operations(wrapper);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getClient(): Promise<IDatabaseClient> {
+    if (!this.isConnected) {
+        await this.connect();
+        if (!this.isConnected) {
+             throw new RpcException({ statusCode: statusCode.INTERNAL_SERVER_ERROR, message: 'Database connection is down' });
+        }
+    }
+    const client = await this.pool!.connect();
+    return new PostgreSQLClientWrapper(client);
   }
 
   public async close(): Promise<void> {
-    if (!this.isConnected) {
-      console.log('Database connection already closed');
-      return;
-    }
-
-    try {
+    if (this.pool) {
       await this.pool.end();
+      this.pool = null;
       this.isConnected = false;
-      console.log('Database connection closed successfully');
-    } catch (error) {
-      console.error(`Failed to close database connection: ${error.message}`);
-      throw new RpcException({
-        statusCode: statusCode.INTERNAL_SERVER_ERROR,
-        message: 'Failed to close database connection',
-      });
     }
-  }
-
-  public getConnectionStatus(): boolean {
-    return this.isConnected;
   }
 }
