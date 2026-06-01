@@ -15,10 +15,11 @@ export class PostgreSQLCompanyPersistence implements InterfaceCompanyRepository 
   async createCompany(company: CompanyModel): Promise<CompanyResponse | null> {
     try {
       return this.databaseService.transaction(async (client: IDatabaseClient) => {
-        // 1. Insertar en Cliente
+        // 1. Insertar en Cliente — idempotente: auth puede haberlo creado antes
         const insertClientQuery = `
           INSERT INTO cliente (cliente_id, tipo_identificacion_id, cliente_id_valido)
-          VALUES (?, ?, ?);
+          VALUES (?, ?, ?)
+          ON CONFLICT (cliente_id) DO NOTHING;
         `;
         await client.query(insertClientQuery, [
           company['companyRuc'],
@@ -27,14 +28,21 @@ export class PostgreSQLCompanyPersistence implements InterfaceCompanyRepository 
         ]);
         const clienteId = company['companyRuc'];
 
-        // 2. Insertar en Empresa
-        const insertCompanyQuery = `
+        // 2. Insertar/actualizar en Empresa — idempotente:
+        //    Si auth creó un placeholder ('SIN DIRECCION'), aquí se actualizan los datos reales.
+        const upsertCompanyQuery = `
           INSERT INTO empresa (
             nombre_comercial, razon_social, ruc, direccion, parroquia_id,
             cliente_id, pais
-          ) VALUES (?, ?, ?, ?, ?, ?, ?);
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (ruc) DO UPDATE SET
+            nombre_comercial = EXCLUDED.nombre_comercial,
+            razon_social     = EXCLUDED.razon_social,
+            direccion        = EXCLUDED.direccion,
+            parroquia_id     = EXCLUDED.parroquia_id,
+            pais             = EXCLUDED.pais;
         `;
-        await client.query(insertCompanyQuery, [
+        await client.query(upsertCompanyQuery, [
           company['companyName'],
           company['socialReason'],
           company['companyRuc'],
@@ -44,7 +52,10 @@ export class PostgreSQLCompanyPersistence implements InterfaceCompanyRepository 
           company['companyCountry'],
         ]);
 
-        // 3. Insertar Correos
+        // 3. Insertar Correos — limpia primero para evitar duplicados
+        const deleteCorreosQuery = `DELETE FROM correo_electronico WHERE cliente_id = ?;`;
+        await client.query(deleteCorreosQuery, [clienteId]);
+
         const insertCorreoQuery = `
           INSERT INTO correo_electronico (email, cliente_id)
           VALUES (?, ?);
@@ -53,7 +64,10 @@ export class PostgreSQLCompanyPersistence implements InterfaceCompanyRepository 
           await client.query(insertCorreoQuery, [email, clienteId]);
         }
 
-        // 4. Insertar Teléfonos
+        // 4. Insertar Teléfonos — limpia primero para evitar duplicados
+        const deleteTelefonosQuery = `DELETE FROM telefono WHERE cliente_id = ?;`;
+        await client.query(deleteTelefonosQuery, [clienteId]);
+
         const insertTelefonoQuery = `
           INSERT INTO telefono (cliente_id, numero, tipo_telefono_id, es_valido)
           VALUES (?, ?, ?, ?);
